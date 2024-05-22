@@ -2,8 +2,15 @@ const app = require('express')()
 const http = require('http')
 const { Server } = require('socket.io')
 const cors = require("cors")
+const { ExpressPeerServer } = require('peer');
+const httpServer = http.createServer(); 
+const peerServer = ExpressPeerServer(httpServer, {
+  debug: true,
+});
 
 app.use(cors())
+app.use("/peerjs", peerServer);
+
 
 const server = http.createServer(app)
 
@@ -41,6 +48,7 @@ async function updateUserslistAndCodeMap(io, socket, roomId) {
 
   userslist.length === 0 && delete roomID_to_Code_Map[roomId]
 }
+
 
 //Whenever someone connects this gets executed
 io.on('connection', function (socket) {
@@ -115,11 +123,20 @@ io.on('connection', function (socket) {
       }
     })
   })
+  
+  socket.on('join-room', (roomId, userId) => {
+    socket.join(roomId)
+    socket.to(roomId).broadcast.emit('user-connected-call', userId)
+
+    socket.on('disconnect', () => {
+      socket.to(roomId).broadcast.emit('user-disconnected-call', userId)
+    })
+  })
 
   //Whenever someone disconnects this piece of code executed
-  socket.on('disconnect', function () {
-    console.log('A user disconnected')
-  })
+  // socket.on('disconnect', function () {
+  //   console.log('A user disconnected')
+  // })
 })
 
 
