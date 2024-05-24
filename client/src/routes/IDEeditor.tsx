@@ -4,37 +4,46 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Buffer } from "buffer";
 import { Layout, Model } from "flexlayout-react";
 import "flexlayout-react/style/light.css";
-import Peer from "peerjs";
+import Peer, { MediaConnection } from "peerjs";
 import { Socket } from "socket.io-client";
 import axios from "axios";
-
 import 'bootstrap/dist/css/bootstrap.min.css';
 
 import InputConsole from "./utils/InputConsole";
 import OutputConsole from "./utils/OutputConsole";
-import { BiExport, BiImport } from "react-icons/bi";
+import { BiExport } from "react-icons/bi";
 import Editor from "./utils/Editor";
 import "./IDEEditor.css";
+import VideoComponent from "./VideoComponent";
 
-export default function IDEeditor({ socket }: { socket: Socket }) {
+interface IDEEditorProps {
+    socket: Socket;
+}
+
+interface LanguageIdMap {
+    [key: string]: number;
+}
+
+export default function IDEeditor({ socket }: IDEEditorProps) {
     const navigate = useNavigate();
-    const { roomId } = useParams();
+    const { roomId } = useParams<{ roomId: string }>();
     const [fetchedUsers, setFetchedUsers] = useState<string[]>([]);
     const [fetchedCode, setFetchedCode] = useState<string>("");
     const [language, setLanguage] = useState<string>("java");
     const [codeKeybinding, setCodeKeybinding] = useState<string | undefined>(undefined);
-    const [currentInput, setCurrentInput] = useState("");
-    const [currentOutput, setCurrentOutput] = useState("");
+    const [currentInput, setCurrentInput] = useState<string>("");
+    const [currentOutput, setCurrentOutput] = useState<string>("");
 
-    const videoGridRef = useRef<HTMLDivElement | null>(null);
-    const myPeerRef = useRef<Peer | null>(null);
-    const myVideoRef = useRef<HTMLVideoElement | null>(null);
-    const peersRef = useRef<{ [key: string]: any }>({});
+    const [peerId, setPeerId] = useState<string>('');
+    const [peers, setPeers] = useState<string[]>([]);
+    const remoteVideoRef = useRef<HTMLVideoElement>(null);
+    const currentUserVideoRef = useRef<HTMLVideoElement>(null);
+    const peerInstance = useRef<Peer | null>(null);
 
     const languagesAvailable = ["javascript", "java", "c_cpp", "python", "typescript", "golang", "yaml", "html"];
     const codeKeybindingsAvailable = ["default", "emacs", "vim"];
 
-    const languageIdMap: { [key: string]: number } = {
+    const languageIdMap: LanguageIdMap = {
         javascript: 1,
         java: 5,
         c_cpp: 50,
@@ -46,84 +55,43 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
     };
 
     useEffect(() => {
-        const videoGrid = videoGridRef.current;
-        const myPeer = new Peer("", {
-            host: "/",
-            port: 5001,
+        const peer = new Peer();
+
+        peer.on('open', (id) => {
+            setPeerId(id);
+            socket.emit("join room", { roomId, peerId: id });
         });
-        myPeerRef.current = myPeer;
-        const myVideo = document.createElement("video");
-        myVideo.muted = true;
-        myVideoRef.current = myVideo;
 
-        const addVideoStream = (video: HTMLVideoElement, stream: MediaStream) => {
-            video.srcObject = stream;
-            video.addEventListener("loadedmetadata", () => {
-                video.play();
-                if (videoGrid) {
-                    videoGrid.append(video);
-                } else {
-                    console.error("Video grid element not found.");
-                }
-            });
-        };
+        peer.on('call', (call: MediaConnection) => {
+            const getUserMedia = navigator.mediaDevices.getUserMedia;
 
-        navigator.mediaDevices
-            .getUserMedia({
-                audio: true,
-                video: true,
-            })
-            .then((stream) => {
-                addVideoStream(myVideo, stream);
-
-                myPeer.on("call", (call) => {
-                    call.answer(stream);
-                    const video = document.createElement("video");
-                    call.on("stream", (userVideoStream) => {
-                        addVideoStream(video, userVideoStream);
-                    });
-                });
-
-                socket.on('user-connected-call', (userId) => {
-                    setTimeout(() => {
-                        // user joined
-                        connectToNewUser(userId, stream)
-                      }, 1000)
-                });
-
-                socket.on('user-disconnected-call', (userId) => {
-                    if (peersRef.current[userId]) peersRef.current[userId].close();
-                });
-
-                myPeer.on('open', (id) => {
-                    socket.emit('join-room', roomId, id);
-                });
-
-                const connectToNewUser = (userId: string, stream: MediaStream) => {
-                    const call = myPeer.call(userId, stream);
-                    const video = document.createElement("video");
-                    call.on("stream", (userVideoStream) => {
-                        addVideoStream(video, userVideoStream);
-                    });
-                    call.on('close', () => {
-                        video.remove();
-                    });
-
-                    peersRef.current[userId] = call;
-                };
-
-
-                return () => {
-                    Object.values(peersRef.current).forEach((peer) => peer.close());
-                    myPeer.destroy();
-                    if (videoGrid) {
-                        videoGrid.innerHTML = "";
+            getUserMedia({ video: true, audio: true })
+                .then((mediaStream) => {
+                    if (currentUserVideoRef.current) {
+                        currentUserVideoRef.current.srcObject = mediaStream;
+                        currentUserVideoRef.current.play();
                     }
-                };
-            });
+                    call.answer(mediaStream);
+                    call.on('stream', (remoteStream) => {
+                        if (remoteVideoRef.current) {
+                            remoteVideoRef.current.srcObject = remoteStream;
+                            remoteVideoRef.current.play();
+                        }
+                    });
+                })
+                .catch(error => console.error('Error accessing media devices.', error));
+        });
 
-        socket.on("updating client list", ({ userslist }) => {
+        peerInstance.current = peer;
+
+        socket.on("updating client list", ({ userslist, peers }) => {
+            console.log("printing peers", peers);
             setFetchedUsers(userslist);
+            setPeers(peers);
+            if(peers.length>1){
+                call(peers[0]);
+                call(peers[1])
+            }
         });
 
         socket.on("on language change", ({ languageUsed }) => {
@@ -150,17 +118,39 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
             socket.off("member left");
         };
     }, [socket, roomId]);
+    
+    const call = (remotePeerId: string) => {
+        const getUserMedia = navigator.mediaDevices.getUserMedia;
 
+        getUserMedia({ video: true, audio: true })
+            .then((mediaStream) => {
+                if (currentUserVideoRef.current) {
+                    currentUserVideoRef.current.srcObject = mediaStream;
+                    currentUserVideoRef.current.play();
+                }
+
+                const call = peerInstance.current?.call(remotePeerId, mediaStream);
+
+                call?.on('stream', (remoteStream) => {
+                    if (remoteVideoRef.current) {
+                        remoteVideoRef.current.srcObject = remoteStream;
+                        remoteVideoRef.current.play();
+                    }
+                });
+            })
+            .catch(error => console.error('Error accessing media devices.', error));
+    };
+    
     function onChange(newValue: string) {
         setFetchedCode(newValue);
         socket.emit("update code", { roomId, code: newValue });
-        socket.emit("syncing the code", { roomId: roomId });
+        socket.emit("syncing the code", { roomId });
     }
 
     function handleLanguageChange(e: React.ChangeEvent<HTMLSelectElement>) {
         setLanguage(e.target.value);
         socket.emit("update language", { roomId, languageUsed: e.target.value });
-        socket.emit("syncing the language", { roomId: roomId });
+        socket.emit("syncing the language", { roomId });
     }
 
     function handleCodeKeybindingChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -168,8 +158,9 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
     }
 
     function handleLeave() {
+        socket.emit("leave room", { roomId, peerId });
         socket.disconnect();
-        if (!socket.connected) navigate("/", { replace: true, state: {} });
+        if (!socket.connected) navigate("/", { replace: true });
     }
 
     function copyToClipboard(text: string) {
@@ -181,11 +172,11 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
         }
     }
 
-    const encode = (str: any) => {
+    const encode = (str: string) => {
         return Buffer.from(str, "binary").toString("base64");
     };
 
-    const decode = (str: any) => {
+    const decode = (str: string) => {
         return Buffer.from(str, "base64").toString();
     };
 
@@ -196,7 +187,6 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
             params: { base64_encoded: "true", fields: "*" },
             headers: {
                 "content-type": "application/json",
-                "Content-Type": "application/json",
                 "X-RapidAPI-Key": "08f3459af4msh7f9b4fb3067649cp17442cjsnc000e564dcf9",
                 "X-RapidAPI-Host": "judge0-ce.p.rapidapi.com",
             },
@@ -256,14 +246,14 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
         setCurrentOutput(status_name + "\n\n" + final_output);
     };
 
-    const getFile = (e: { target: any }, setState: any) => {
+    const getFile = (e: React.ChangeEvent<HTMLInputElement>, setState: React.Dispatch<React.SetStateAction<string>>) => {
         const input = e.target;
-        if ("files" in input && input.files.length > 0) {
+        if (input.files && input.files.length > 0) {
             placeFileContent(input.files[0], setState);
         }
     };
 
-    const placeFileContent = (file: any, setState: (arg0: unknown) => void) => {
+    const placeFileContent = (file: File, setState: React.Dispatch<React.SetStateAction<string>>) => {
         readFileContent(file)
             .then((content) => {
                 setState(content);
@@ -279,7 +269,7 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
         anchor.click();
     };
 
-    function readFileContent(file: Blob) {
+    function readFileContent(file: Blob): Promise<string> {
         const reader = new FileReader();
         return new Promise<string>((resolve, reject) => {
             reader.onload = (event) => resolve(event.target?.result as string);
@@ -289,7 +279,7 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
     }
 
     const factory = (node: any) => {
-        var component = node.getComponent();
+        const component = node.getComponent();
 
         if (component === "ide") {
             return (
@@ -326,7 +316,7 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
         }
     };
 
-    var json: any = {
+    const json: any = {
         global: {},
         borders: [],
         layout: {
@@ -472,7 +462,10 @@ export default function IDEeditor({ socket }: { socket: Socket }) {
                             <Layout model={model} factory={factory} />
                         </div>
                     </div>
-                    <div id="video-grid" ref={videoGridRef}></div>
+                        <VideoComponent 
+                            currentUserVideoRef={currentUserVideoRef}
+                            remoteVideoRef={remoteVideoRef}
+                        />
                     <Toaster />
                 </div>
             </div>

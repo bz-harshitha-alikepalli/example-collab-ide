@@ -18,7 +18,7 @@ export default function IDEHome() {
         username && navigate(`/room/${roomId}`, { state: { username } })
     }
 
-    function createRoomId(_e:any) {
+    function createRoomId(e:any) {
         try {
             setRoomId(uuidv4())
             toast.success("Room created")

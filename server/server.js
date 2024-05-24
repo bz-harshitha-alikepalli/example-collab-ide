@@ -27,6 +27,7 @@ app.get('/', function (req, res) {
 
 const socketID_to_Users_Map = {}
 const roomID_to_Code_Map = {}
+const roomID_to_Peer_Map = {}
 
 async function getUsersinRoom(roomId, io) {
   const socketList = await io.in(roomId).allSockets()
@@ -74,9 +75,13 @@ io.on('connection', function (socket) {
     }
 
     // alerting other users in room that new user joined
-    socket.in(roomId).emit("new member joined", {
-      username
-    })
+    // Assuming you have a function to handle new member joining
+
+    socket.on("new member joined", ({ username, peerId }) => {
+      // Broadcast the new member's peer ID along with their username to all clients
+      io.to(roomId).emit("new member joined", { username, peerId });
+    });
+
   })
 
   // for other users in room to view the changes
@@ -123,20 +128,21 @@ io.on('connection', function (socket) {
       }
     })
   })
-  
-  socket.on('join-room', (roomId, userId) => {
-    socket.join(roomId)
-    socket.to(roomId).broadcast.emit('user-connected-call', userId)
-
-    socket.on('disconnect', () => {
-      socket.to(roomId).broadcast.emit('user-disconnected-call', userId)
-    })
+ 
+  socket.on('join room', ({ roomId, peerId }) => {
+    console.log("peerid",peerId)
+    if(!roomID_to_Peer_Map[roomId]){
+      roomID_to_Peer_Map[roomId]=[]
+    }
+    roomID_to_Peer_Map[roomId].push(peerId)
+    io.to(roomId).emit("updating client list", { userslist: [], peers: roomID_to_Peer_Map[roomId] });
   })
 
+
   //Whenever someone disconnects this piece of code executed
-  // socket.on('disconnect', function () {
-  //   console.log('A user disconnected')
-  // })
+   socket.on('disconnect', function () {
+     console.log('A user disconnected')
+   })
 })
 
 
